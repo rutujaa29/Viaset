@@ -1,0 +1,334 @@
+// Semiconductor & Electronics Supply-Chain Intelligence Platform
+// Production-ready B2B SaaS schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============== AUTH & TENANTS ==============
+
+enum Role {
+  ADMIN // Platform owner
+  COMPANY_ADMIN // Company account admin
+  COMPANY_USER // Company member
+}
+
+enum SubscriptionPlan {
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  PAST_DUE
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  role         Role     @default(COMPANY_USER)
+  companyId    String?  @map("company_id")
+  company      Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  savedSearches  SavedSearch[]
+  searchUsage    SearchUsage[]
+  bookmarks      Bookmark[]
+  userNotes      CompanyNote[]
+  comparisons    CompanyComparison[]
+  searchHistory  SearchHistory[]
+  exportHistory  ExportHistory[]
+  customRequests CustomCategoryRequest[]
+
+  @@index([companyId])
+  @@index([email])
+  @@map("users")
+}
+
+model Company {
+  id                    String             @id @default(cuid())
+  name                  String             @map("name")
+  subscriptionPlan      SubscriptionPlan   @default(BASIC) @map("subscription_plan")
+  subscriptionStatus    SubscriptionStatus @default(ACTIVE) @map("subscription_status")
+  searchesUsedThisMonth Int                @default(0) @map("searches_used_this_month")
+  searchLimitMonth      Int?               @map("search_limit_month") // null = unlimited
+  resetUsageOn          DateTime?          @map("reset_usage_on") // next reset date
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  users          User[]
+  savedSearches  SavedSearch[]
+  searchUsage    SearchUsage[]
+  searchHistory  SearchHistory[]
+  exportHistory  ExportHistory[]
+  customRequests CustomCategoryRequest[]
+
+  @@index([subscriptionPlan])
+  @@map("companies")
+}
+
+// ============== LEAD MAPPING & COMPANY MASTER ==============
+
+enum LeadCategory {
+  SERVICE
+  PRODUCT
+  CAPABILITY
+}
+
+enum CompanyCategory {
+  SUPPLIER
+  BUYER
+  BOTH
+}
+
+model IndustrySegment {
+  id              String                   @id @default(cuid())
+  name            String                   @unique
+  companyProfiles CompanyProfileIndustry[]
+  leadTypes       LeadTypeIndustry[]
+
+  @@map("industry_segments")
+}
+
+model LeadType {
+  id         String                @id @default(cuid())
+  name       String                @unique
+  category   LeadCategory          @default(SERVICE)
+  slug       String                @unique
+  industries LeadTypeIndustry[]
+  suppliers  CompanyLeadSupplier[]
+  buyers     CompanyLeadBuyer[]
+
+  @@index([category])
+  @@map("lead_types")
+}
+
+model LeadTypeIndustry {
+  leadTypeId        String          @map("lead_type_id")
+  industrySegmentId String          @map("industry_segment_id")
+  leadType          LeadType        @relation(fields: [leadTypeId], references: [id], onDelete: Cascade)
+  industrySegment   IndustrySegment @relation(fields: [industrySegmentId], references: [id], onDelete: Cascade)
+
+  @@id([leadTypeId, industrySegmentId])
+  @@map("lead_type_industries")
+}
+
+enum GeographicReach {
+  LOCAL
+  NATIONAL
+  GLOBAL
+}
+
+// Company Master Database (suppliers, buyers, partners)
+model CompanyProfile {
+  id               String          @id @default(cuid())
+  companyName      String          @map("company_name")
+  category         CompanyCategory @default(BOTH)
+  subCategory      String?         @map("sub_category") // ATMP, PCB, Testing, Design, Raw Material, Equipment, EMS, OEM, etc.
+  servicesOffered  String[]        @map("services_offered") // multi-select
+  industriesServed String[]        @map("industries_served")
+  email            String?
+  phone            String?
+  website          String?
+  city             String?
+  state            String?
+  country          String?
+  certifications   String? // optional
+  notes            String?         @db.Text
+  companySize      String?         @map("company_size") // optional: Startup, MSME, Large, etc.
+
+  // Enhanced fields for investor-ready platform
+  yearEstablished  Int?             @map("year_established")
+  minOrderQuantity String?          @map("min_order_quantity") // e.g., "100 units", "No MOQ"
+  exportCapability Boolean          @default(false) @map("export_capability")
+  geographicReach  GeographicReach? @map("geographic_reach")
+  keyCapabilities  String[]         @default([]) @map("key_capabilities") // Granular tags
+  dataCompleteness Int              @default(0) @map("data_completeness") // 0-100 score
+  isActive         Boolean          @default(true) @map("is_active")
+  lastVerified     DateTime?        @map("last_verified")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  industries  CompanyProfileIndustry[]
+  asSupplier  CompanyLeadSupplier[]
+  asBuyer     CompanyLeadBuyer[]
+  bookmarks   Bookmark[]
+  userNotes   CompanyNote[]
+  comparisons CompanyComparison[]
+
+  @@index([category])
+  @@index([subCategory])
+  @@index([companyName])
+  @@index([country])
+  @@index([isActive])
+  @@index([dataCompleteness])
+  @@map("company_profiles")
+}
+
+model CompanyProfileIndustry {
+  companyProfileId  String          @map("company_profile_id")
+  industrySegmentId String          @map("industry_segment_id")
+  companyProfile    CompanyProfile  @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  industrySegment   IndustrySegment @relation(fields: [industrySegmentId], references: [id], onDelete: Cascade)
+
+  @@id([companyProfileId, industrySegmentId])
+  @@map("company_profile_industries")
+}
+
+// Lead mapping: who supplies / who needs each lead type
+model CompanyLeadSupplier {
+  companyProfileId String         @map("company_profile_id")
+  leadTypeId       String         @map("lead_type_id")
+  companyProfile   CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  leadType         LeadType       @relation(fields: [leadTypeId], references: [id], onDelete: Cascade)
+
+  @@id([companyProfileId, leadTypeId])
+  @@map("company_lead_suppliers")
+}
+
+model CompanyLeadBuyer {
+  companyProfileId String         @map("company_profile_id")
+  leadTypeId       String         @map("lead_type_id")
+  companyProfile   CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  leadType         LeadType       @relation(fields: [leadTypeId], references: [id], onDelete: Cascade)
+
+  @@id([companyProfileId, leadTypeId])
+  @@map("company_lead_buyers")
+}
+
+// ============== SAVED SEARCHES & USAGE ==============
+
+model SavedSearch {
+  id        String   @id @default(cuid())
+  name      String
+  filters   Json // { leadTypeId, category, industryIds, location, keyword, etc. }
+  companyId String   @map("company_id")
+  userId    String   @map("user_id")
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([companyId])
+  @@map("saved_searches")
+}
+
+model SearchUsage {
+  id        String   @id @default(cuid())
+  companyId String   @map("company_id")
+  userId    String?  @map("user_id")
+  month     Int // 1-12
+  year      Int
+  count     Int      @default(0)
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([companyId, year, month])
+  @@index([companyId])
+  @@map("search_usage")
+}
+
+// ============== COMPANY PRODUCTIVITY FEATURES ==============
+
+model Bookmark {
+  id               String         @id @default(cuid())
+  userId           String         @map("user_id")
+  companyProfileId String         @map("company_profile_id")
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyProfile   CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  @@unique([userId, companyProfileId])
+  @@index([userId])
+  @@map("bookmarks")
+}
+
+model CompanyNote {
+  id               String         @id @default(cuid())
+  userId           String         @map("user_id")
+  companyProfileId String         @map("company_profile_id")
+  content          String         @db.Text
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyProfile   CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([companyProfileId])
+  @@map("company_notes")
+}
+
+model CompanyComparison {
+  id                String          @id @default(cuid())
+  userId            String          @map("user_id")
+  name              String // User-defined name for the comparison
+  companyProfileIds String[]        @map("company_profile_ids") // Array of company IDs being compared
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now()) @map("created_at")
+  CompanyProfile    CompanyProfile? @relation(fields: [companyProfileId], references: [id])
+  companyProfileId  String?
+
+  @@index([userId])
+  @@map("company_comparisons")
+}
+
+model SearchHistory {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  companyId   String   @map("company_id")
+  filters     Json // Search filters used
+  resultCount Int      @default(0) @map("result_count")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([createdAt])
+  @@map("search_history")
+}
+
+model ExportHistory {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  companyId   String   @map("company_id")
+  format      String // 'csv' or 'xlsx'
+  recordCount Int      @default(0) @map("record_count")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([companyId])
+  @@map("export_history")
+}
+
+model CustomCategoryRequest {
+  id           String   @id @default(cuid())
+  companyId    String   @map("company_id")
+  userId       String   @map("user_id")
+  categoryName String   @map("category_name")
+  description  String?  @db.Text
+  status       String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([status])
+  @@map("custom_category_requests")
+}
